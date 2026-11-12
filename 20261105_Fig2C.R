@@ -3,32 +3,31 @@ library(dplyr)
 library(tidyr)
 library(ggplot2)
 
-# -------------------------------------------------------
-# 1. Load data
-# -------------------------------------------------------
-
-base_path <- "C:/Users/ssa214/UiT Office 365/O365-PhD Saikat - General/miRNA hypertension"
+base_path <- getwd()
+data_dir <- file.path(base_path, "data")
+output_dir <- file.path(base_path, "results")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 clin <- read_xlsx(
-  file.path(base_path, "LDL_Information.xlsx")
+  file.path(data_dir, "LDL_Information.xlsx")
 )
 
 fig2a <- read_xlsx(
-  file.path(base_path, "20261012/20261026_2A_Heatmap_All_Sample_Cluster_Assignment.xlsx")
+  file.path(output_dir, "20261026_2A_Heatmap_All_Sample_Cluster_Assignment_2Clusters.xlsx")
 )
 
 fig2b <- read_xlsx(
-  file.path(base_path, "20261012/20261026_2B_Heatmap_All_Sample_Cluster_Assignment.xlsx")
+  file.path(output_dir, "20261026_2B_Heatmap_All_Sample_Cluster_Assignment_2Clusters.xlsx")
 )
 
-
-# -------------------------------------------------------
-# 2. Extract patient-level clusters
 # No hemolysis filtering
-# -------------------------------------------------------
 
 get_clusters <- function(data, cluster_col, followup) {
   
+  # This P1/P2 analysis requires an explicitly aligned two-cluster input.
+  if (any(!is.na(data[[cluster_col]]) & !data[[cluster_col]] %in% c("P1", "P2"))) {
+    stop("Figure 2C uses the original two-cluster inputs. Run the two-cluster heatmap script; three-cluster inputs are not accepted.")
+  }
   data <- data %>%
     transmute(
       SequencingID = as.integer(sub("^R", "", Sample_ID)),
@@ -49,7 +48,7 @@ get_clusters <- function(data, cluster_col, followup) {
     semi_join(valid_patients, by = "SequencingID") %>%
     distinct(SequencingID, Cluster)
   
-  stopifnot(!anyDuplicated(clusters$SequencingID))
+  stopifnot(!anyNA(clusters$SequencingID), !anyDuplicated(clusters$SequencingID))
   
   clusters
 }
@@ -61,11 +60,6 @@ clusters_6M <- get_clusters(
 clusters_24M <- get_clusters(
   fig2b, "TwentyFourM_Cluster", "24M"
 )
-
-
-# -------------------------------------------------------
-# 3. Combine cluster assignments
-# -------------------------------------------------------
 
 combined_clusters <- full_join(
   clusters_6M %>% rename(Cluster_6M = Cluster),
@@ -81,17 +75,6 @@ combined_clusters <- full_join(
     )
   ) %>%
   arrange(SequencingID)
-
-combined_clusters
-
-table(combined_clusters$Status)
-
-
-# -------------------------------------------------------
-# 4. Resolve discordant assignments
-# -------------------------------------------------------
-
-# Options: "24M", "6M", "exclude"
 
 make_dataset <- function(rule = "24M") {
   
@@ -113,12 +96,6 @@ make_dataset <- function(rule = "24M") {
         Status %in% c("6M only", "24M only"),
         "Single comparison",
         "Both comparisons"
-      ),
-      
-      Point_shape = if_else(
-        Status == "Discordant",
-        "Discordant",
-        "Other"
       )
     ) %>%
     filter(!is.na(Cluster)) %>%
@@ -128,16 +105,9 @@ make_dataset <- function(rule = "24M") {
     )
 }
 
-stopifnot(!anyDuplicated(clin$SequencingID))
+stopifnot(!anyNA(clin$SequencingID), !anyDuplicated(clin$SequencingID))
 
 clinical_clusters <- make_dataset("24M")
-
-table(clinical_clusters$Cluster)
-
-
-# -------------------------------------------------------
-# 5. Statistical comparisons
-# -------------------------------------------------------
 
 variables <- c("LDL", "tCHOL0", "age0")
 
@@ -151,6 +121,8 @@ calculate_statistics <- function(data) {
     x <- d[[v]][d$Cluster == "P1"]
     y <- d[[v]][d$Cluster == "P2"]
     
+    stopifnot(is.numeric(x), is.numeric(y), length(x) >= 2, length(y) >= 2,
+              all(is.finite(x)), all(is.finite(y)))
     tibble(
       Variable = v,
       
@@ -181,13 +153,6 @@ statistics <- calculate_statistics(clinical_clusters) %>%
     )
   )
 
-statistics
-
-
-# -------------------------------------------------------
-# 6. Sensitivity analysis
-# -------------------------------------------------------
-
 sensitivity <- bind_rows(
   lapply(c("24M", "6M", "exclude"), function(rule) {
     
@@ -201,13 +166,6 @@ sensitivity <- bind_rows(
   })
 )
 
-sensitivity
-
-
-# -------------------------------------------------------
-# 7. Prepare plotting data
-# -------------------------------------------------------
-
 variable_labels <- c(
   "LDL (mmol/L)",
   "Total cholesterol (mmol/L)",
@@ -219,7 +177,6 @@ plot_data <- clinical_clusters %>%
     SequencingID,
     Cluster,
     Highlight,
-    Point_shape,
     all_of(variables)
   ) %>%
   pivot_longer(
@@ -235,11 +192,6 @@ plot_data <- clinical_clusters %>%
       labels = variable_labels
     )
   )
-
-
-# -------------------------------------------------------
-# 8. Prepare significance brackets
-# -------------------------------------------------------
 
 plot_statistics <- statistics %>%
   mutate(
@@ -273,11 +225,6 @@ plot_statistics <- plot_statistics %>%
     plot_positions,
     by = "Variable"
   )
-
-
-# -------------------------------------------------------
-# 9. Figure 2C
-# -------------------------------------------------------
 
 mean_sd <- function(x) {
   
@@ -313,8 +260,7 @@ p <- ggplot(
   # Individual patients
   geom_point(
     aes(
-      color = Highlight#,
-     # shape = Point_shape
+      color = Highlight
     ),
     position = position_jitter(
       width = 0.08,
@@ -331,12 +277,6 @@ p <- ggplot(
     )
   ) +
   
-  scale_shape_manual(
-    values = c(
-      "Other" = 16,
-      "Discordant" = 17
-    )
-  ) +
   
   # Horizontal significance bracket
   geom_segment(
@@ -403,8 +343,7 @@ p <- ggplot(
   labs(
     x = "Patient cluster",
     y = NULL,
-    color = NULL#,
-    #shape = "Assignment"
+    color = NULL
   ) +
   
   theme_classic(base_size = 12) +
@@ -424,15 +363,10 @@ p <- ggplot(
     legend.position = "bottom"
   )
 
-p
-
-
-# -------------------------------------------------------
-# 10. Export
-# -------------------------------------------------------
+print(p)
 
 ggsave(
-  "Figure_2C_All_Samples.pdf",
+  file.path(output_dir, "Figure_2C_All_Samples.pdf"),
   p,
   width = 9,
   height = 4
@@ -440,46 +374,44 @@ ggsave(
 
 write.csv2(
   statistics,
-  "Figure_2C_Statistics.csv",
+  file.path(output_dir, "Figure_2C_Statistics.csv"),
   row.names = FALSE
 )
 
 write.csv2(
   sensitivity,
-  "Figure_2C_Sensitivity.csv",
+  file.path(output_dir, "Figure_2C_Sensitivity.csv"),
   row.names = FALSE
 )
 
 write.csv2(
   combined_clusters,
-  "Figure_2C_Cluster_Assignments.csv",
+  file.path(output_dir, "Figure_2C_Cluster_Assignments.csv"),
   row.names = FALSE
 )
-
 
 ###################################### Without Hemolysis Samples
-base_path <- "C:/Users/ssa214/UiT Office 365/O365-PhD Saikat - General/miRNA hypertension"
 
 clin <- read_xlsx(
-  file.path(base_path, "LDL_Information.xlsx")
+  file.path(data_dir, "LDL_Information.xlsx")
 )
 
 fig2a <- read_xlsx(
-  file.path(base_path, "20261012/20261026_2A_Heatmap_Subsetted_Sample_Cluster_Assignment.xlsx")
+  file.path(output_dir, "20261026_2A_Heatmap_Subsetted_Sample_Cluster_Assignment.xlsx")
 )
 
 fig2b <- read_xlsx(
-  file.path(base_path, "20261012/20261026_2B_Heatmap_Subsetted_Sample_Cluster_Assignment.xlsx")
+  file.path(output_dir, "20261026_2B_Heatmap_Subsetted_Sample_Cluster_Assignment.xlsx")
 )
 
-
-# -------------------------------------------------------
-# 2. Extract patient-level clusters
 # No hemolysis filtering
-# -------------------------------------------------------
 
 get_clusters <- function(data, cluster_col, followup) {
   
+  # This P1/P2 analysis requires an explicitly aligned two-cluster input.
+  if (any(!is.na(data[[cluster_col]]) & !data[[cluster_col]] %in% c("P1", "P2"))) {
+    stop("Figure 2C uses the original two-cluster inputs. Run the two-cluster heatmap script; three-cluster inputs are not accepted.")
+  }
   data <- data %>%
     transmute(
       SequencingID = as.integer(sub("^R", "", Sample_ID)),
@@ -500,7 +432,7 @@ get_clusters <- function(data, cluster_col, followup) {
     semi_join(valid_patients, by = "SequencingID") %>%
     distinct(SequencingID, Cluster)
   
-  stopifnot(!anyDuplicated(clusters$SequencingID))
+  stopifnot(!anyNA(clusters$SequencingID), !anyDuplicated(clusters$SequencingID))
   
   clusters
 }
@@ -512,11 +444,6 @@ clusters_6M <- get_clusters(
 clusters_24M <- get_clusters(
   fig2b, "TwentyFourM_Cluster", "24M"
 )
-
-
-# -------------------------------------------------------
-# 3. Combine cluster assignments
-# -------------------------------------------------------
 
 combined_clusters <- full_join(
   clusters_6M %>% rename(Cluster_6M = Cluster),
@@ -532,17 +459,6 @@ combined_clusters <- full_join(
     )
   ) %>%
   arrange(SequencingID)
-
-combined_clusters
-
-table(combined_clusters$Status)
-
-
-# -------------------------------------------------------
-# 4. Resolve discordant assignments
-# -------------------------------------------------------
-
-# Options: "24M", "6M", "exclude"
 
 make_dataset <- function(rule = "24M") {
   
@@ -564,12 +480,6 @@ make_dataset <- function(rule = "24M") {
         Status %in% c("6M only", "24M only"),
         "Single comparison",
         "Both comparisons"
-      ),
-      
-      Point_shape = if_else(
-        Status == "Discordant",
-        "Discordant",
-        "Other"
       )
     ) %>%
     filter(!is.na(Cluster)) %>%
@@ -579,16 +489,9 @@ make_dataset <- function(rule = "24M") {
     )
 }
 
-stopifnot(!anyDuplicated(clin$SequencingID))
+stopifnot(!anyNA(clin$SequencingID), !anyDuplicated(clin$SequencingID))
 
 clinical_clusters <- make_dataset("24M")
-
-table(clinical_clusters$Cluster)
-
-
-# -------------------------------------------------------
-# 5. Statistical comparisons
-# -------------------------------------------------------
 
 variables <- c("LDL", "tCHOL0", "age0")
 
@@ -602,6 +505,8 @@ calculate_statistics <- function(data) {
     x <- d[[v]][d$Cluster == "P1"]
     y <- d[[v]][d$Cluster == "P2"]
     
+    stopifnot(is.numeric(x), is.numeric(y), length(x) >= 2, length(y) >= 2,
+              all(is.finite(x)), all(is.finite(y)))
     tibble(
       Variable = v,
       
@@ -632,13 +537,6 @@ statistics <- calculate_statistics(clinical_clusters) %>%
     )
   )
 
-statistics
-
-
-# -------------------------------------------------------
-# 6. Sensitivity analysis
-# -------------------------------------------------------
-
 sensitivity <- bind_rows(
   lapply(c("24M", "6M", "exclude"), function(rule) {
     
@@ -652,13 +550,6 @@ sensitivity <- bind_rows(
   })
 )
 
-sensitivity
-
-
-# -------------------------------------------------------
-# 7. Prepare plotting data
-# -------------------------------------------------------
-
 variable_labels <- c(
   "LDL (mmol/L)",
   "Total cholesterol (mmol/L)",
@@ -670,7 +561,6 @@ plot_data <- clinical_clusters %>%
     SequencingID,
     Cluster,
     Highlight,
-    Point_shape,
     all_of(variables)
   ) %>%
   pivot_longer(
@@ -686,11 +576,6 @@ plot_data <- clinical_clusters %>%
       labels = variable_labels
     )
   )
-
-
-# -------------------------------------------------------
-# 8. Prepare significance brackets
-# -------------------------------------------------------
 
 plot_statistics <- statistics %>%
   mutate(
@@ -724,11 +609,6 @@ plot_statistics <- plot_statistics %>%
     plot_positions,
     by = "Variable"
   )
-
-
-# -------------------------------------------------------
-# 9. Figure 2C
-# -------------------------------------------------------
 
 mean_sd <- function(x) {
   
@@ -764,8 +644,7 @@ p <- ggplot(
   # Individual patients
   geom_point(
     aes(
-      color = Highlight#,
-      # shape = Point_shape
+      color = Highlight
     ),
     position = position_jitter(
       width = 0.08,
@@ -782,12 +661,6 @@ p <- ggplot(
     )
   ) +
   
-  scale_shape_manual(
-    values = c(
-      "Other" = 16,
-      "Discordant" = 17
-    )
-  ) +
   
   # Horizontal significance bracket
   geom_segment(
@@ -854,8 +727,7 @@ p <- ggplot(
   labs(
     x = "Patient cluster",
     y = NULL,
-    color = NULL#,
-    #shape = "Assignment"
+    color = NULL
   ) +
   
   theme_classic(base_size = 12) +
@@ -875,15 +747,10 @@ p <- ggplot(
     legend.position = "bottom"
   )
 
-p
-
-
-# -------------------------------------------------------
-# 10. Export
-# -------------------------------------------------------
+print(p)
 
 ggsave(
-  "Figure_2C_Subset_Samples.pdf",
+  file.path(output_dir, "Figure_2C_Subset_Samples.pdf"),
   p,
   width = 9,
   height = 4
@@ -891,18 +758,18 @@ ggsave(
 
 write.csv2(
   statistics,
-  "Figure_2C_Subset_Statistics.csv",
+  file.path(output_dir, "Figure_2C_Subset_Statistics.csv"),
   row.names = FALSE
 )
 
 write.csv2(
   sensitivity,
-  "Figure_2C_Subset_Sensitivity.csv",
+  file.path(output_dir, "Figure_2C_Subset_Sensitivity.csv"),
   row.names = FALSE
 )
 
 write.csv2(
   combined_clusters,
-  "Figure_2C_Subset_Cluster_Assignments.csv",
+  file.path(output_dir, "Figure_2C_Subset_Cluster_Assignments.csv"),
   row.names = FALSE
 )
